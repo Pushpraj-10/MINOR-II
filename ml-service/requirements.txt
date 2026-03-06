@@ -1,0 +1,36 @@
+# Core ML/DL Framework
+tensorflow>=2.13.0,<2.16.0
+
+# Audio Processing
+librosa>=0.10.0
+soundfile>=0.12.0  # Required by librosa for audio I/O
+
+# Data Processing & Analysis
+numpy>=1.24.0,<2.0.0
+pandas>=2.0.0
+scikit-learn>=1.3.0
+
+# Model Optimization
+tensorflow-model-optimization>=0.7.5
+
+# Model Conversion (Optional - install as needed)
+# Uncomment based on your deployment target:
+# coremltools>=7.0  # For iOS deployment
+# tf2onnx>=1.15.0   # For ONNX conversion
+
+# Visualization & Monitoring
+matplotlib>=3.7.0
+seaborn>=0.12.0
+
+# Jupyter Notebook Support (Optional)
+# jupyter>=1.0.0
+# ipykernel>=6.25.0
+
+# Audio Augmentation (Optional but recommended)
+audiomentations>=0.33.0
+
+# Configuration
+pyyaml>=6.0
+
+# Progress Bars
+tqdm>=4.65.0

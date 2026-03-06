@@ -1,0 +1,91 @@
+# =============================================================================
+# Training Configuration for Depression Detection Model
+# =============================================================================
+
+# --- Data Settings ---
+data:
+  raw_dir: "data/raw/voice_data"
+  interim_dir: "data/interim"
+  processed_dir: "data/processed"
+  depression_dir: "depression1"
+  normal_dir: "normal1"
+  audio_extensions: [".wav", ".mp3", ".flac"]
+  test_size: 0.15
+  val_size: 0.15
+  random_state: 42
+
+# --- Audio Processing ---
+audio:
+  sample_rate: 16000
+  duration: 5.0          # seconds
+  mono: true
+  normalize: true
+  trim_silence: true
+  trim_top_db: 20
+
+# --- Feature Extraction ---
+features:
+  type: "mfcc"           # mfcc | mel_spectrogram
+  n_mfcc: 13
+  n_fft: 512
+  hop_length: 256
+  n_mels: 128
+  normalize_features: true
+
+# --- Model Settings ---
+model:
+  architecture: "lightweight_cnn"   # lightweight_cnn | 1d_cnn | mobilenet
+  input_shape: null                 # auto-computed from features
+  num_classes: 1                    # binary classification (sigmoid)
+  dropout_rate: 0.3
+
+# --- Training Settings ---
+training:
+  batch_size: 32
+  epochs: 100
+  learning_rate: 0.001
+  optimizer: "adam"
+  loss: "binary_crossentropy"
+  metrics: ["accuracy", "AUC"]
+
+  # Callbacks
+  early_stopping:
+    monitor: "val_loss"
+    patience: 10
+    restore_best_weights: true
+
+  reduce_lr:
+    monitor: "val_loss"
+    factor: 0.5
+    patience: 5
+    min_lr: 1.0e-7
+
+  checkpoint:
+    monitor: "val_accuracy"
+    save_best_only: true
+
+# --- Augmentation ---
+augmentation:
+  enabled: true
+  noise_factor: 0.005
+  time_shift_range: 0.1
+  pitch_shift_steps: 2
+
+# --- Model Optimization (Post-training) ---
+optimization:
+  quantize: true
+  quantization_type: "dynamic"    # dynamic | full_integer
+  prune: false
+  target_sparsity: 0.5
+
+# --- Artifacts ---
+artifacts:
+  models_dir: "artifacts/models"
+  metrics_dir: "artifacts/metrics"
+  plots_dir: "artifacts/plots"
+  experiment_name: "depression_detection"
+
+# --- Logging ---
+logging:
+  level: "INFO"
+  log_dir: "artifacts/logs"

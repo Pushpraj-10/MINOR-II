@@ -19,9 +19,18 @@ import librosa
 import time
 
 RAVDESS_DIR = Path(r"d:\MINOR\Voice data and codes\The Ryerson Audio-Visual Dataset\The Ryerson Audio-Visual Dataset")
-MODEL_PATH = "artifacts/models/mel_depression_combined.tflite"
 SAMPLE_RATE = 16000
 AUDIO_LEN = 80000  # 5 seconds
+
+ALL_MODELS = {
+    "MFCC CNN (baseline)":    "artifacts/models/depression_detection_combined.tflite",
+    "Mel CNN (4-block)":      "artifacts/models/mel_depression_combined.tflite",
+    "BiLSTM":                 "artifacts/models/lstm_depression_combined.tflite",
+    "CNN-LSTM Hybrid":        "artifacts/models/cnn_lstm_depression_combined.tflite",
+    "Multi-Feature Fusion":   "artifacts/models/multi_feature_depression_combined.tflite",
+    "CNN + Attention":        "artifacts/models/attention_depression_combined.tflite",
+    "Separable CNN":          "artifacts/models/separable_cnn_depression_combined.tflite",
+}
 
 # Emotion code mapping
 EMOTION_MAP = {
@@ -102,31 +111,18 @@ def load_ravdess_data():
     return audio_list, np.array(labels), file_info
 
 
-def main():
-    print("=" * 60)
-    print("  RAVDESS Dataset Evaluation")
-    print("  Model: Combined TFLite (depression_detection_combined)")
-    print("=" * 60)
-    print(f"\nLabel mapping:")
-    print(f"  Sad (emotion=04)     → Depression (1)")
-    print(f"  Neutral (emotion=01) → Normal (0)")
+def evaluate_model(model_name, model_path, audio_list, labels, file_info):
+    """Evaluate a single TFLite model and return metrics dict."""
+    import os
+    if not os.path.exists(model_path):
+        print(f"  SKIP: {model_name} — {model_path} not found")
+        return None
 
-    # Load data
-    print("\nLoading RAVDESS audio files...")
-    audio_list, labels, file_info = load_ravdess_data()
-    n_dep = np.sum(labels == 1)
-    n_norm = np.sum(labels == 0)
-    print(f"Loaded {len(audio_list)} samples (depression/sad={n_dep}, normal/neutral={n_norm})")
-
-    # Load TFLite model
-    print("\nLoading TFLite model...")
-    interpreter = tf.lite.Interpreter(model_path=MODEL_PATH)
+    interpreter = tf.lite.Interpreter(model_path=model_path)
     interpreter.allocate_tensors()
     input_details = interpreter.get_input_details()
     output_details = interpreter.get_output_details()
 
-    # Run inference
-    print("\nRunning inference...")
     preds = []
     start = time.time()
     for audio in audio_list:
@@ -139,58 +135,106 @@ def main():
     preds = np.array(preds)
     y_pred = (preds >= 0.5).astype(int)
 
-    # Metrics
     acc = accuracy_score(labels, y_pred)
     prec = precision_score(labels, y_pred, zero_division=0)
     rec = recall_score(labels, y_pred, zero_division=0)
     f1 = f1_score(labels, y_pred, zero_division=0)
-    auc = roc_auc_score(labels, preds)
+    auc = roc_auc_score(labels, preds) if len(np.unique(labels)) > 1 else 0.0
     cm = confusion_matrix(labels, y_pred)
 
-    print(f"\n{'=' * 60}")
-    print(f"  RESULTS — RAVDESS (Sad vs Neutral)")
-    print(f"{'=' * 60}")
-    print(f"  Samples:   {len(audio_list)} (dep={n_dep}, norm={n_norm})")
-    print(f"  Accuracy:  {acc*100:.2f}%")
-    print(f"  Precision: {prec*100:.2f}%")
-    print(f"  Recall:    {rec*100:.2f}%")
-    print(f"  F1 Score:  {f1*100:.2f}%")
-    print(f"  AUC-ROC:   {auc*100:.2f}%")
-    print(f"  Time:      {elapsed:.1f}s ({elapsed/len(audio_list)*1000:.1f}ms/sample)")
-    print(f"\n  Confusion Matrix:")
-    print(f"                  Pred Normal  Pred Dep")
-    print(f"  True Normal       {cm[0][0]:>5d}      {cm[0][1]:>5d}")
-    print(f"  True Dep(Sad)     {cm[1][0]:>5d}      {cm[1][1]:>5d}")
-    print(f"\n{classification_report(labels, y_pred, target_names=['Normal/Neutral', 'Depression/Sad'])}")
+    return {
+        "name": model_name,
+        "accuracy": acc,
+        "precision": prec,
+        "recall": rec,
+        "f1": f1,
+        "auc": auc,
+        "cm": cm,
+        "preds": preds,
+        "y_pred": y_pred,
+        "elapsed": elapsed,
+        "ms_per_sample": elapsed / len(audio_list) * 1000,
+    }
 
-    # Per-actor breakdown
-    print(f"\n{'=' * 60}")
-    print(f"  PER-ACTOR BREAKDOWN")
-    print(f"{'=' * 60}")
-    actors = sorted(set(info["actor"] for info in file_info))
-    print(f"{'Actor':>8} {'Samples':>8} {'Correct':>8} {'Accuracy':>10} {'Avg Prob':>10}")
-    print("-" * 50)
-    for actor in actors:
-        idxs = [i for i, info in enumerate(file_info) if info["actor"] == actor]
-        actor_labels = labels[idxs]
-        actor_preds_bin = y_pred[idxs]
-        actor_probs = preds[idxs]
-        correct = np.sum(actor_labels == actor_preds_bin)
-        actor_acc = correct / len(idxs)
-        avg_prob = np.mean(actor_probs)
-        print(f"  {actor:>6} {len(idxs):>8d} {correct:>8d} {actor_acc*100:>9.1f}% {avg_prob:>9.3f}")
 
-    # Show some misclassified samples
-    misclassified = np.where(labels != y_pred)[0]
-    if len(misclassified) > 0:
-        print(f"\n{'=' * 60}")
-        print(f"  MISCLASSIFIED SAMPLES ({len(misclassified)} total)")
-        print(f"{'=' * 60}")
-        for idx in misclassified[:20]:
-            info = file_info[idx]
-            true_label = "Dep/Sad" if labels[idx] == 1 else "Normal"
-            pred_label = "Dep/Sad" if y_pred[idx] == 1 else "Normal"
-            print(f"  {info['file']}: true={true_label}, pred={pred_label}, prob={preds[idx]:.4f} (Actor {info['actor']}, {info['intensity']})")
+def main():
+    print("=" * 60)
+    print("  RAVDESS Dataset Evaluation — All Models")
+    print("=" * 60)
+    print(f"\nLabel mapping:")
+    print(f"  Sad (emotion=04)     → Depression (1)")
+    print(f"  Neutral (emotion=01) → Normal (0)")
+
+    # Load data
+    print("\nLoading RAVDESS audio files...")
+    audio_list, labels, file_info = load_ravdess_data()
+    n_dep = np.sum(labels == 1)
+    n_norm = np.sum(labels == 0)
+    print(f"Loaded {len(audio_list)} samples (depression/sad={n_dep}, normal/neutral={n_norm})")
+
+    # Evaluate all models
+    all_results = []
+    for model_name, model_path in ALL_MODELS.items():
+        print(f"\n{'='*60}")
+        print(f"  Evaluating: {model_name}")
+        print(f"{'='*60}")
+        result = evaluate_model(model_name, model_path, audio_list, labels, file_info)
+        if result is not None:
+            all_results.append(result)
+            cm = result["cm"]
+            print(f"  Accuracy:  {result['accuracy']*100:.2f}%")
+            print(f"  Precision: {result['precision']*100:.2f}%")
+            print(f"  Recall:    {result['recall']*100:.2f}%")
+            print(f"  F1 Score:  {result['f1']*100:.2f}%")
+            print(f"  AUC-ROC:   {result['auc']*100:.2f}%")
+            print(f"  Confusion Matrix: TN={cm[0][0]} FP={cm[0][1]} FN={cm[1][0]} TP={cm[1][1]}")
+
+    # Summary comparison table
+    print(f"\n\n{'='*90}")
+    print(f"  RAVDESS COMPARISON TABLE — All Models (Sad vs Neutral)")
+    print(f"{'='*90}")
+    header = f"{'Model':<28} {'Acc':>7} {'Prec':>7} {'Recall':>7} {'F1':>7} {'AUC':>7} {'ms':>7}"
+    print(header)
+    print("-" * 90)
+    sorted_results = sorted(all_results, key=lambda r: r["accuracy"], reverse=True)
+    for r in sorted_results:
+        print(f"{r['name']:<28} {r['accuracy']*100:>6.2f}% {r['precision']*100:>6.2f}% {r['recall']*100:>6.2f}% {r['f1']*100:>6.2f}% {r['auc']*100:>6.2f}% {r['ms_per_sample']:>6.1f}")
+    print("=" * 90)
+
+    # Detailed per-model output for best model
+    if sorted_results:
+        best = sorted_results[0]
+        print(f"\n  BEST MODEL (by Accuracy): {best['name']}")
+        print(f"  Accuracy: {best['accuracy']*100:.2f}%  |  AUC: {best['auc']*100:.2f}%")
+
+        # Per-actor breakdown for best model
+        print(f"\n{'='*60}")
+        print(f"  PER-ACTOR BREAKDOWN — {best['name']}")
+        print(f"{'='*60}")
+        actors = sorted(set(info["actor"] for info in file_info))
+        print(f"{'Actor':>8} {'Samples':>8} {'Correct':>8} {'Accuracy':>10} {'Avg Prob':>10}")
+        print("-" * 50)
+        for actor in actors:
+            idxs = [i for i, info in enumerate(file_info) if info["actor"] == actor]
+            actor_labels = labels[idxs]
+            actor_preds_bin = best["y_pred"][idxs]
+            actor_probs = best["preds"][idxs]
+            correct = np.sum(actor_labels == actor_preds_bin)
+            actor_acc = correct / len(idxs)
+            avg_prob = np.mean(actor_probs)
+            print(f"  {actor:>6} {len(idxs):>8d} {correct:>8d} {actor_acc*100:>9.1f}% {avg_prob:>9.3f}")
+
+        # Misclassified samples for best model
+        misclassified = np.where(labels != best["y_pred"])[0]
+        if len(misclassified) > 0:
+            print(f"\n{'='*60}")
+            print(f"  MISCLASSIFIED SAMPLES — {best['name']} ({len(misclassified)} total)")
+            print(f"{'='*60}")
+            for idx in misclassified[:20]:
+                info = file_info[idx]
+                true_label = "Dep/Sad" if labels[idx] == 1 else "Normal"
+                pred_label = "Dep/Sad" if best["y_pred"][idx] == 1 else "Normal"
+                print(f"  {info['file']}: true={true_label}, pred={pred_label}, prob={best['preds'][idx]:.4f} (Actor {info['actor']}, {info['intensity']})")
 
 
 if __name__ == "__main__":

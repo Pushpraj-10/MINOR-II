@@ -16,7 +16,7 @@ from sklearn.metrics import (
     roc_curve,
 )
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Dict, Optional, Tuple
 import json
 import logging
 
@@ -203,3 +203,95 @@ def print_classification_report(
     print(report)
 
     return report
+
+
+def print_split_summary(
+    y_true: np.ndarray,
+    y_pred_proba: np.ndarray,
+    split_name: str = "Test",
+) -> Tuple[float, float]:
+    """
+    Compute and print a formatted evaluation summary for one data split.
+
+    Args:
+        y_true: Ground truth labels.
+        y_pred_proba: Predicted probabilities from the model.
+        split_name: Label for the split (e.g. "Train", "Validation", "Test").
+
+    Returns:
+        Tuple of (accuracy, roc_auc).
+    """
+    metrics = evaluate_model(y_true, y_pred_proba)
+    cm = confusion_matrix(
+        y_true.flatten(), (y_pred_proba.flatten() >= 0.5).astype(int)
+    )
+    print(f"\n{'=' * 50}")
+    print(f"{split_name} Results ({len(y_true)} samples)")
+    print(f"{'=' * 50}")
+    print(f"Accuracy: {metrics['accuracy']:.4f} ({metrics['accuracy'] * 100:.2f}%)")
+    print(f"AUC:      {metrics['roc_auc']:.4f} ({metrics['roc_auc'] * 100:.2f}%)")
+    print("Confusion Matrix:")
+    print(f"  TN={cm[0][0]}  FP={cm[0][1]}")
+    print(f"  FN={cm[1][0]}  TP={cm[1][1]}")
+    print_classification_report(y_true, y_pred_proba)
+    return metrics["accuracy"], metrics["roc_auc"]
+
+
+def evaluate_tflite_on_splits(
+    tflite_path: str,
+    splits: Dict[str, Tuple[np.ndarray, np.ndarray]],
+    audio_length: int = 80000,
+    split_names: Optional[list] = None,
+) -> Dict[str, Dict]:
+    """
+    Evaluate a combined TFLite model on audio data splits.
+
+    Args:
+        tflite_path: Path to the .tflite model file.
+        splits: Dict mapping split name ("train"/"val"/"test") to
+                (audio_array, labels) tuple.
+        audio_length: Expected number of audio samples per clip.
+        split_names: Subset of splits to evaluate. Defaults to all present.
+
+    Returns:
+        Dict of split_name -> {"accuracy": ..., "roc_auc": ..., "avg_ms": ...}
+    """
+    import time
+    import tensorflow as tf
+
+    interpreter = tf.lite.Interpreter(model_path=tflite_path)
+    interpreter.allocate_tensors()
+    inp = interpreter.get_input_details()
+    out = interpreter.get_output_details()
+
+    size_kb = Path(tflite_path).stat().st_size / 1024
+    print(f"\nModel: {tflite_path} ({size_kb:.1f} KB)")
+
+    names_to_eval = split_names or [n for n in ["train", "val", "test"] if n in splits]
+    results = {}
+    for name in names_to_eval:
+        if name not in splits:
+            continue
+        audio_arr, y_true = splits[name]
+        preds, times = [], []
+        for audio in audio_arr:
+            audio_in = audio.astype(np.float32)
+            if len(audio_in) < audio_length:
+                audio_in = np.pad(audio_in, (0, audio_length - len(audio_in)))
+            else:
+                audio_in = audio_in[:audio_length]
+
+            t0 = time.perf_counter()
+            interpreter.set_tensor(inp[0]["index"], audio_in[np.newaxis])
+            interpreter.invoke()
+            t1 = time.perf_counter()
+            preds.append(interpreter.get_tensor(out[0]["index"])[0][0])
+            times.append(t1 - t0)
+
+        preds = np.array(preds)
+        avg_ms = np.mean(times) * 1000
+        acc, auc = print_split_summary(y_true, preds, f"TFLite {name.capitalize()}")
+        print(f"  Avg inference: {avg_ms:.2f} ms/sample")
+        results[name] = {"accuracy": acc, "roc_auc": auc, "avg_ms": avg_ms}
+
+    return results

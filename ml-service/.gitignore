@@ -1,0 +1,40 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+*.egg
+
+# Virtual environment
+venv/
+.venv/
+env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+Thumbs.db
+.DS_Store
+
+# Artifacts (large binary files)
+artifacts/models/*.tflite
+artifacts/models/*.keras
+artifacts/models/*.h5
+artifacts/logs/
+artifacts/plots/
+
+# Data (not tracked)
+data/raw/
+data/interim/
+data/processed/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Environment
+.env

@@ -54,30 +54,18 @@ notebooks/
 
 ## Template Structure for Notebooks
 ```python
-# Cell 1: Notebook metadata and description
-"""
-# Notebook Title
-
-**Author**: Your Name
-**Date**: 2026-02-19
-**Purpose**: Brief description of notebook goal
-**Status**: [Exploration | Prototype | Production-Ready | Archived]
-"""
-
-# Cell 2: Imports and setup
+# Cell 1: Imports and setup
 import sys
-sys.path.append('..')  # Add project root to path
+sys.path.append('..')
 
-from src.utils.config_loader import load_config
-from src.features.audio_processing import extract_mfcc
+from src.config import SAMPLE_RATE, N_MELS, N_MFCC
+from src.features.tf_audio import extract_mel_spectrogram, extract_mfcc
+from src.data.loader import AudioDataLoader
 import numpy as np
 import matplotlib.pyplot as plt
 
 %load_ext autoreload
 %autoreload 2
-
-# Cell 3: Load configurations
-config = load_config('../config/audio_processing.yaml')
 
 # Continue with analysis...
 ```

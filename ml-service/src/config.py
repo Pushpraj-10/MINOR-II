@@ -33,3 +33,6 @@ DATA_DIR: str = "data/raw/voice_data"
 DEPRESSION_DIR: str = "depression1"
 NORMAL_DIR: str = "normal1"
 MODEL_DIR: str = "artifacts/models"
+
+# EATD-Corpus
+EATD_CORPUS_DIR: str = "data/raw/EATD-Corpus/EATD-Corpus"

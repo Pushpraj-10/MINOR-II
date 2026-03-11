@@ -1,0 +1,86 @@
+{
+  "model_name": "multi_feature_v2",
+  "input_shape": [
+    46,
+    313,
+    1
+  ],
+  "optimal_threshold": 0.7931748032569885,
+  "class_weights": {
+    "0": 0.6854094579008074,
+    "1": 1.8483670295489891
+  },
+  "training": {
+    "epochs_run": 61,
+    "best_val_auc": 0.8415486812591553
+  },
+  "results": {
+    "default_0.5": {
+      "Train": {
+        "accuracy": 0.9832,
+        "auc": 1.0,
+        "f1": 0.9817,
+        "precision": 0.964,
+        "recall": 1.0
+      },
+      "Validation": {
+        "accuracy": 0.7074,
+        "auc": 0.8408,
+        "f1": 0.6115,
+        "precision": 0.4923,
+        "recall": 0.8067
+      },
+      "Test (EATD+DS1)": {
+        "accuracy": 0.592,
+        "auc": 0.6381,
+        "f1": 0.2956,
+        "precision": 0.201,
+        "recall": 0.5583
+      },
+      "EATD_subject_level": {
+        "n_subjects": 60,
+        "auc": 0.4303,
+        "accuracy_at_0.5": 0.5167
+      },
+      "RAVDESS": {
+        "accuracy": 0.6285,
+        "auc": 0.5295,
+        "f1": 0.7574,
+        "precision": 0.6707,
+        "recall": 0.8698
+      }
+    },
+    "optimized": {
+      "Train": {
+        "accuracy": 0.9952,
+        "auc": 1.0,
+        "f1": 0.9947,
+        "precision": 0.9895,
+        "recall": 1.0
+      },
+      "Validation": {
+        "accuracy": 0.7938,
+        "auc": 0.8408,
+        "f1": 0.6667,
+        "precision": 0.6187,
+        "recall": 0.7227
+      },
+      "Test (EATD+DS1)": {
+        "accuracy": 0.7141,
+        "auc": 0.6381,
+        "f1": 0.3167,
+        "precision": 0.25,
+        "recall": 0.432
+      },
+      "RAVDESS": {
+        "accuracy": 0.5764,
+        "auc": 0.5295,
+        "f1": 0.695,
+        "precision": 0.6683,
+        "recall": 0.724
+      }
+    }
+  },
+  "tflite_path": "artifacts/models\\multi_feature_v2\\multi_feature_v2.tflite",
+  "tflite_size_kb": 110.5
+}

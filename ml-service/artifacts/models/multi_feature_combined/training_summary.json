@@ -1,0 +1,81 @@
+{
+  "model_name": "multi_feature_combined",
+  "input_shape": [
+    46,
+    313,
+    1
+  ],
+  "optimal_threshold": 0.8683,
+  "class_weights": {
+    "0": 0.7172,
+    "1": 1.6512
+  },
+  "training": {
+    "epochs_run": 43,
+    "best_val_auc": 0.9066
+  },
+  "results": {
+    "default_0.5": {
+      "Train": {
+        "accuracy": 0.9633,
+        "auc": 0.9965,
+        "f1": 0.9548,
+        "precision": 0.9412,
+        "recall": 0.9687
+      },
+      "Validation": {
+        "accuracy": 0.8591,
+        "auc": 0.9057,
+        "f1": 0.6703,
+        "precision": 0.5794,
+        "recall": 0.7949
+      },
+      "Test (EATD+DS1)": {
+        "accuracy": 0.7994,
+        "auc": 0.663,
+        "f1": 0.3272,
+        "precision": 0.3571,
+        "recall": 0.3019
+      },
+      "RAVDESS (cross-dataset)": {
+        "accuracy": 0.4792,
+        "auc": 0.5259,
+        "f1": 0.4898,
+        "precision": 0.7059,
+        "recall": 0.375
+      }
+    },
+    "optimized": {
+      "Train": {
+        "accuracy": 0.9404,
+        "auc": 0.9965,
+        "f1": 0.9194,
+        "precision": 1.0,
+        "recall": 0.8509
+      },
+      "Validation": {
+        "accuracy": 0.9515,
+        "auc": 0.9057,
+        "f1": 0.8489,
+        "precision": 0.9672,
+        "recall": 0.7564
+      },
+      "Test (EATD+DS1)": {
+        "accuracy": 0.864,
+        "auc": 0.663,
+        "f1": 0.3536,
+        "precision": 0.7625,
+        "recall": 0.2302
+      },
+      "RAVDESS (cross-dataset)": {
+        "accuracy": 0.3819,
+        "auc": 0.5259,
+        "f1": 0.1759,
+        "precision": 0.7917,
+        "recall": 0.099
+      }
+    }
+  },
+  "tflite_path": "artifacts/models\\multi_feature_combined\\multi_feature_combined.tflite",
+  "tflite_size_kb": 402.4
+}

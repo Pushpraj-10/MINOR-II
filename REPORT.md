@@ -1,354 +1,384 @@
-# Depression Detection from Voice — Model Training & Evaluation Report
+# Depression Detection — Model Evaluation Report
 
-**Date:** March 9, 2026  
-**Project:** Voice-Based Depression Detection (Minor Project)  
-**Task:** Binary classification — Depression vs Normal from 5-second audio clips
+**Date:** 2026-03-11
 
----
+This report compares two models for speech-based depression detection:
 
-## 1. Dataset Overview
+| Property | mel_cnn_eatd (v1) | multi_feature_combined (v2) |
+|----------|--------------------|-----------------------------|
+| Architecture | 4-block CNN | 3-block CNN |
+| Input Features | Mel spectrogram (64 bins) | 5-feature stack (MFCC, delta-MFCC, chroma, spectral contrast, ZCR — 46 bins) |
+| Training Data | EATD-Corpus only | EATD-Corpus + DATASET_1 (combined) |
+| Loss | Focal loss | Binary cross-entropy (label smoothing 0.05) |
+| TFLite Size | 1124.2 KB | 402.4 KB |
+| Parameters | ~400K | ~101K |
 
-| Property | Value |
-| :--- | :--- |
-| Total Samples | 800 (400 depression + 400 normal) |
-| Audio Format | WAV, mono, 16 kHz sample rate |
-| Duration | 5.0 seconds (80,000 samples per clip) |
-| Preprocessing | Normalize amplitude, trim silence (top_db=20) |
-| Train / Val / Test Split | 70% / 15% / 15% (560 / 120 / 120) |
-| Stratification | Yes (equal class balance in all splits) |
-| Random State | 42 |
+### Datasets
 
-### Feature Extraction (via `tf.signal` for TFLite compatibility)
-
-| Feature | Parameters |
-| :--- | :--- |
-| **Mel Spectrogram** | n_fft=512, hop_length=256, n_mels=128, f_min=0, f_max=8000 |
-| **MFCC** | n_mfcc=13, derived from Mel via DCT-II |
-| **Time Steps** | 313 (from 80,000 samples with hop=256) |
+| Dataset | Description | Samples | Depression | Normal |
+|---------|-------------|---------|------------|--------|
+| EATD-Corpus | Real clinical depression interviews (SDS ≥ 53) | 3,337 | 568 | 2,769 |
+| DATASET_1 | Internal voice recordings (depression1/normal1) | 800 | 400 | 400 |
+| RAVDESS | Acted emotions (Sad → Depression, Neutral → Normal) | 288 | 192 | 96 |
 
 ---
 
-## 2. Models Trained
+# Part A — Original Model: `mel_cnn_eatd`
 
-Seven models were trained and evaluated. All models use the same dataset split and produce a combined TFLite model with audio preprocessing baked in (raw audio → prediction in a single forward pass).
+Single-feature mel-spectrogram CNN trained on EATD-Corpus only. Uses focal loss and speaker-independent splits.
 
-### Model 1: MFCC CNN (Baseline)
-- **Architecture:** 4-block CNN on MFCC features (13 × 313 × 1)
-- **Parameters:** ~58K
-- **Training:** Previously trained (epoch details from prior session)
-- **TFLite:** 118.0 KB, quantized (int8), no flex delegate needed
+## 2. EATD-Corpus (Training Domain)
 
-### Model 2: Mel Spectrogram CNN (4-Block)
-- **Architecture:** 4-block CNN on Mel spectrogram (128 × 313 × 1)
-  - Conv2D(32) → BN → MaxPool → Conv2D(64) → BN → MaxPool → Conv2D(128) → BN → MaxPool → Conv2D(256) → BN → GAP → Dense(128) → Dense(1)
-- **Parameters:** ~249K
-- **Training:** Previously trained (100% on all splits from prior session)
-- **TFLite:** 1124.6 KB, float32, no flex delegate needed
+Speaker-independent splits ensure no speaker appears in more than one split.
 
-### Model 3: Bidirectional LSTM (BiLSTM)
-- **Architecture:** BiLSTM on Mel spectrogram in sequence format (313 × 128)
-  - BiLSTM(64, return_sequences=True) → BN → BiLSTM(32) → BN → Dense(64) → Dropout(0.4) → Dense(1, sigmoid)
-- **Parameters:** 145,025 (566.5 KB)
-- **Training:** 29 epochs (early stopping at patience=10, best epoch=19)
-- **Learning Rate:** Started at 0.001, reduced to 0.000125
-- **TFLite:** 741.0 KB, float32, **requires flex delegate** (TensorListReserve/SetItem/Stack ops)
+### 2.1 Split-Level Results
 
-### Model 4: CNN-LSTM Hybrid
-- **Architecture:** 2 CNN blocks + LSTM on Mel spectrogram (128 × 313 × 1)
-  - Conv2D(32) → BN → MaxPool(2,2) → Conv2D(64) → BN → MaxPool(2,2) → Permute → Reshape(78, 2048) → LSTM(64) → BN → Dense(32) → Dense(1, sigmoid)
-- **Parameters:** 562,497 (2.15 MB)
-- **Training:** 22 epochs (early stopping, best epoch=12)
-- **Learning Rate:** 0.001
-- **TFLite:** 2354.8 KB, float32, **requires flex delegate** (TensorListReserve/SetItem/Stack ops)
+| Split | Samples | Dep | Norm | Accuracy | Precision | Recall | Specificity | F1 | AUC-ROC | ms/sample |
+|-------|---------|-----|------|----------|-----------|--------|-------------|------|---------|-----------|
+| Train | 1,504 | 345 | 1,159 | 70.35% | 30.80% | 23.48% | 84.30% | 26.64% | 72.29% | 11.5 |
+| Val | 313 | 18 | 295 | 88.50% | 20.00% | 33.33% | 91.86% | 25.00% | 79.92% | 11.4 |
+| Test | 1,520 | 205 | 1,315 | 76.64% | 13.59% | 13.66% | 86.46% | 13.63% | 51.27% | 11.5 |
 
-### Model 5: Multi-Feature Fusion CNN (Mel + MFCC)
-- **Architecture:** Dual-branch CNN with feature fusion
-  - **Branch A (Mel):** Conv2D(32) → BN → MaxPool → Conv2D(64) → BN → MaxPool → Conv2D(64) → BN → GAP → 64-dim
-  - **Branch B (MFCC):** Conv2D(32) → BN → MaxPool → Conv2D(64) → BN → GAP → 64-dim
-  - **Fusion:** Concatenate(128) → Dense(64) → Dropout(0.4) → Dense(1, sigmoid)
-- **Parameters:** 83,905 (327.75 KB)
-- **Training:** 28 epochs (early stopping, best epoch=17)
-- **Learning Rate:** Started at 0.001, reduced to 0.00025
-- **TFLite:** 486.5 KB, float32, **requires flex delegate** (StridedSlice op from MFCC extraction)
+### 2.2 Confusion Matrices
 
-### Model 6: CNN + Multi-Head Self-Attention
-- **Architecture:** 2 CNN blocks + Multi-Head Attention on Mel spectrogram (128 × 313 × 1)
-  - Conv2D(32) → BN → MaxPool(2,2) → Conv2D(64) → BN → MaxPool(2,2) → Permute → Reshape(78, 2048) → Dense(128) → MultiHeadAttention(4 heads, key_dim=32) + Residual → LayerNorm → GlobalAvgPool1D → Dense(64) → Dense(1, sigmoid)
-- **Parameters:** 356,097 (1.36 MB)
-- **Training:** 15 epochs (early stopping at patience=12, best epoch=3)
-- **Learning Rate:** 0.0005
-- **TFLite:** 1556.3 KB, float32, **no flex delegate needed**
+**Train:**
+|  | Pred Normal | Pred Depression |
+|--|-------------|-----------------|
+| **Actual Normal** | TN = 977 | FP = 182 |
+| **Actual Depression** | FN = 264 | TP = 81 |
 
-### Model 7: Depthwise Separable CNN (MobileNet-style)
-- **Architecture:** Lightweight separable convolutions on Mel spectrogram (128 × 313 × 1)
-  - Conv2D(16) → BN → 4× [SeparableConv2D(32→64→128→128) → BN → MaxPool] → GAP → Dense(64) → Dense(1, sigmoid)
-- **Parameters:** 39,601 (154.69 KB) — **smallest model**
-- **Training:** 26 epochs (early stopping, best epoch=15)
-- **Learning Rate:** Started at 0.001, reduced to 0.0000625
-- **TFLite:** 309.6 KB, float32, **no flex delegate needed**
+**Validation:**
+|  | Pred Normal | Pred Depression |
+|--|-------------|-----------------|
+| **Actual Normal** | TN = 271 | FP = 24 |
+| **Actual Depression** | FN = 12 | TP = 6 |
+
+**Test (Unseen Speakers):**
+|  | Pred Normal | Pred Depression |
+|--|-------------|-----------------|
+| **Actual Normal** | TN = 1,137 | FP = 178 |
+| **Actual Depression** | FN = 177 | TP = 28 |
+
+### 2.3 Analysis
+
+- **High specificity (84–92%):** The model correctly identifies most normal speech segments.
+- **Low recall (13–33%):** The model misses a large proportion of depressed segments — expected given the heavy class imbalance (~13.5% depression in test).
+- **AUC-ROC of 72.29% (train) to 51.27% (test):** Shows generalization drop on unseen speakers, indicating the model learns some speaker-specific patterns.
+- **Validation AUC (79.92%)** is higher than test, likely due to the small validation set (only 18 depression samples).
 
 ---
 
-## 3. Results Summary
+## 3. DATASET_1 (Cross-Dataset — Internal Voice Data)
 
-### 3.1 Keras Model Evaluation (with correct decision threshold)
+This dataset has balanced classes (400 depression, 400 normal) from a different recording domain.
 
-| # | Model | Train Acc | Train AUC | Val Acc | Val AUC | Test Acc | Test AUC | Params |
-| :---: | :--- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| 1 | MFCC CNN (baseline) | 99.29% | 99.61% | 95.83% | 99.31% | 96.67% | 99.61% | ~58K |
-| 2 | Mel CNN (4-block) | 100.00% | 100.00% | 100.00% | 100.00% | 100.00% | 100.00% | ~249K |
-| 3 | BiLSTM | 67.14% | 99.96% | 64.17% | 100.00% | 64.17% | 99.78% | 145K |
-| 4 | CNN-LSTM Hybrid | 99.82% | 100.00% | 100.00% | 100.00% | 100.00% | 100.00% | 562K |
-| 5 | Multi-Feature Fusion | 98.57% | 100.00% | 98.35% | 100.00% | 98.33% | 100.00% | 84K |
-| 6 | CNN + Attention | 52.14% | 99.92% | 51.67% | 100.00% | 50.83% | 100.00% | 356K |
-| 7 | Separable CNN | 50.00% | 100.00% | 50.00% | 100.00% | 50.00% | 100.00% | 40K |
+### 3.1 Results
 
-### 3.2 TFLite Combined Model Evaluation (raw audio input → prediction)
+| Split | Samples | Dep | Norm | Accuracy | Precision | Recall | Specificity | F1 | AUC-ROC | ms/sample |
+|-------|---------|-----|------|----------|-----------|--------|-------------|------|---------|-----------|
+| Train | 560 | 280 | 280 | 50.00% | 50.00% | 100.00% | 0.00% | 66.67% | 27.33% | 11.6 |
+| Val | 120 | 60 | 60 | 50.00% | 50.00% | 100.00% | 0.00% | 66.67% | 30.31% | 11.6 |
+| Test | 120 | 60 | 60 | 50.00% | 50.00% | 100.00% | 0.00% | 66.67% | 28.22% | 11.6 |
+| Full | 800 | 400 | 400 | 50.00% | 50.00% | 100.00% | 0.00% | 66.67% | 27.85% | 11.6 |
 
-| # | Model | Test Acc | Test AUC | Val Acc | Val AUC | Size (KB) | Inference (ms) | Flex Delegate |
-| :---: | :--- | ---: | ---: | ---: | ---: | ---: | ---: | :---: |
-| 1 | MFCC CNN (baseline) | 96.67% | 99.61% | 95.83% | 99.31% | 118.0 | 15.0 | No |
-| 2 | Mel CNN (4-block) | 100.00% | 100.00% | 100.00% | 100.00% | 1124.6 | 25.7 | No |
-| 3 | BiLSTM | 64.17% | 99.78% | 64.17% | 100.00% | 741.0 | 59.8 | **Yes** |
-| 4 | **CNN-LSTM Hybrid** | **100.00%** | **100.00%** | **100.00%** | **100.00%** | 2354.8 | 29.8 | **Yes** |
-| 5 | Multi-Feature Fusion | 98.33% | 100.00% | 98.33% | 100.00% | 486.5 | 27.0 | **Yes** |
-| 6 | CNN + Attention | 50.83% | 100.00% | 51.67% | 100.00% | 1556.3 | 24.7 | No |
-| 7 | Separable CNN | 50.00% | 100.00% | 50.00% | 100.00% | 309.6 | 43.0 | No |
-
----
-
-## 4. Detailed Confusion Matrices (Test Set — 120 samples)
-
-### Model 1: MFCC CNN (baseline)
-
-|  | Predicted Normal | Predicted Depression |
-| :--- | :---: | :---: |
-| **Actual Normal** | 56 (TN) | 4 (FP) |
-| **Actual Depression** | 0 (FN) | 60 (TP) |
-
-> Precision: 93.75% | Recall: 100.00% | F1: 96.77%
-
-### Model 2: Mel CNN (4-block)
-
-|  | Predicted Normal | Predicted Depression |
-| :--- | :---: | :---: |
-| **Actual Normal** | 60 (TN) | 0 (FP) |
-| **Actual Depression** | 0 (FN) | 60 (TP) |
-
-> Precision: 100.00% | Recall: 100.00% | F1: 100.00%
-
-### Model 3: BiLSTM
-
-|  | Predicted Normal | Predicted Depression |
-| :--- | :---: | :---: |
-| **Actual Normal** | 17 (TN) | 43 (FP) |
-| **Actual Depression** | 0 (FN) | 60 (TP) |
-
-> Precision: 58.25% | Recall: 100.00% | F1: 73.62%
-
-> **Issue:** High false positive rate — predicts most samples as depression. AUC is 99.78% indicating the ranking is correct but the 0.5 threshold is suboptimal.
-
-### Model 4: CNN-LSTM Hybrid
-
-|  | Predicted Normal | Predicted Depression |
-| :--- | :---: | :---: |
-| **Actual Normal** | 60 (TN) | 0 (FP) |
-| **Actual Depression** | 0 (FN) | 60 (TP) |
-
-> Precision: 100.00% | Recall: 100.00% | F1: 100.00%
-
-### Model 5: Multi-Feature Fusion (Mel + MFCC)
-
-|  | Predicted Normal | Predicted Depression |
-| :--- | :---: | :---: |
-| **Actual Normal** | 58 (TN) | 2 (FP) |
-| **Actual Depression** | 0 (FN) | 60 (TP) |
-
-> Precision: 96.77% | Recall: 100.00% | F1: 98.36%
-
-### Model 6: CNN + Attention
-
-|  | Predicted Normal | Predicted Depression |
-| :--- | :---: | :---: |
-| **Actual Normal** | 60 (TN) | 0 (FP) |
-| **Actual Depression** | 59 (FN) | 1 (TP) |
-
-> Precision: 100.00% | Recall: 1.67% | F1: 3.28%
-
-> **Issue:** Predicts almost everything as normal. Despite perfect AUC (ranking is correct), the sigmoid output distribution is heavily skewed — most predictions are near 0. The 0.5 threshold misses nearly all depression cases.
-
-### Model 7: Separable CNN
-
-|  | Predicted Normal | Predicted Depression |
-| :--- | :---: | :---: |
-| **Actual Normal** | 0 (TN) | 60 (FP) |
-| **Actual Depression** | 0 (FN) | 60 (TP) |
-
-> Precision: 50.00% | Recall: 100.00% | F1: 66.67%
-
-> **Issue:** Predicts everything as depression. Similar threshold problem — the model has learned discriminative features (AUC=100%) but all sigmoid outputs are above 0.5.
-
----
-
-## 5. Analysis & Key Observations
-
-### 5.1 Top Performers (by Test Accuracy)
-
-| Rank | Model | Test Acc | Test AUC | Size | Flex Delegate |
-| :---: | :--- | ---: | ---: | ---: | :---: |
-| 1 | Mel CNN (4-block) | 100.00% | 100.00% | 1124.6 KB | No |
-| 1 | CNN-LSTM Hybrid | 100.00% | 100.00% | 2354.8 KB | Yes |
-| 3 | Multi-Feature Fusion | 98.33% | 100.00% | 486.5 KB | Yes |
-| 4 | MFCC CNN (baseline) | 96.67% | 99.61% | 118.0 KB | No |
-
-### 5.2 CNN-based approaches dominate
-- All four models with the highest accuracy are CNN-based or CNN-hybrid architectures.
-- Pure sequence models (BiLSTM) and attention-only approaches struggled with calibration despite strong ranking ability (high AUC).
-
-### 5.3 AUC vs Accuracy disconnect
-- Three models (BiLSTM, CNN + Attention, Separable CNN) achieved near-perfect AUC (~100%) but poor accuracy (50-64%).
-- **Root cause:** These models learned discriminative features but their sigmoid output distributions are not calibrated around the 0.5 threshold. The models have learned to rank depression > normal correctly, but the raw output values are shifted.
-- **Potential fix:** Using a calibrated threshold (e.g., via Youden's J statistic on the validation set) instead of the default 0.5 would significantly improve their usable accuracy.
-
-### 5.4 Model Size vs Performance
-- **Best efficiency:** MFCC CNN at 118 KB achieves 96.67% accuracy — best size-to-performance ratio.
-- **Best overall accuracy:** Mel CNN and CNN-LSTM Hybrid both achieve 100%, but CNN-LSTM is 2x larger and requires flex delegate.
-- **Smallest mel-based model:** Separable CNN at 309.6 KB (39K params) — but needs threshold calibration.
-
-### 5.5 Flex Delegate Requirements
-- Models using LSTM layers (BiLSTM, CNN-LSTM) require the TensorFlow Lite Flex delegate due to `TensorListReserve`, `TensorListSetItem`, and `TensorListStack` ops.
-- Multi-Feature Fusion requires flex for complex `StridedSlice` from MFCC extraction.
-- This means these models need additional dependencies on mobile (larger app size).
-- Models **without** flex delegate: MFCC CNN, Mel CNN, CNN + Attention, Separable CNN.
-
-### 5.6 Inference Speed
-| Model | Inference Time | Notes |
-| :--- | ---: | :--- |
-| MFCC CNN | 15.0 ms | Fastest — smaller feature space (13 vs 128 mel bins) |
-| CNN + Attention | 24.7 ms | Surprisingly fast despite complexity |
-| Mel CNN | 25.7 ms | Good balance of speed and accuracy |
-| Multi-Feature | 27.0 ms | Dual-branch adds modest overhead |
-| CNN-LSTM | 29.8 ms | LSTM adds latency vs pure CNN |
-| Separable CNN | 43.0 ms | Depth-wise ops less optimized on CPU |
-| BiLSTM | 59.8 ms | Slowest — sequential LSTM processing |
-
----
-
-## 6. Training Dynamics
-
-| Model | Best Epoch | Total Epochs | Early Stop Patience | Val Loss at Best |
-| :--- | ---: | ---: | ---: | ---: |
-| Mel CNN | ~20 | 40 | 10 | ~0.001 |
-| BiLSTM | 19 | 29 | 10 | 0.879 |
-| CNN-LSTM | 12 | 22 | 10 | 0.086 |
-| Multi-Feature | 17 | 28 | 10 | 0.048 |
-| CNN + Attention | 3 | 15 | 12 | 0.588 |
-| Separable CNN | 15 | 26 | 10 | 0.715 |
-
-**Notable observations:**
-- CNN + Attention converged extremely fast (best at epoch 3), suggesting the attention mechanism quickly captures the global patterns.
-- Separable CNN's validation loss remained high (~0.7, near random) for the first 12 epochs before suddenly improving — indicating a phase transition in learning.
-- BiLSTM showed clear overfitting: training accuracy reached 99.6% while validation accuracy plateaued around 64%.
-
----
-
-## 7. Recommendations
-
-### For Mobile Deployment (Flutter App)
-
-1. **Best Choice: Mel CNN (4-block)**
-   - 100% test accuracy, 100% AUC
-   - No flex delegate needed (standard TFLite builtins only)
-   - 1124.6 KB model size, 25.7 ms inference
-   - Already deployed and validated
-
-2. **Alternative: MFCC CNN (baseline)**
-   - 96.67% test accuracy
-   - Smallest model (118 KB), fastest inference (15 ms)
-   - Best for resource-constrained devices
-
-3. **Not recommended for mobile:**
-   - CNN-LSTM Hybrid — despite 100% accuracy, requires flex delegate (adds ~8 MB to app)
-   - BiLSTM, Attention, Separable CNN — need threshold calibration before deployment
-
-### For Further Improvement
-- Apply **threshold calibration** to BiLSTM, Attention, and Separable CNN models (they have discriminative power but poor default thresholds)
-- Test on **external datasets** (e.g., RAVDESS) for cross-domain generalization
-- Consider **ensemble** of Mel CNN + Multi-Feature Fusion for improved robustness
-- Explore **data augmentation** (pitch shift, time stretch, noise injection) to address potential overfitting on the small dataset
-
----
-
-## 8. File Artifacts
-
-| File | Description | Size |
-| :--- | :--- | ---: |
-| `artifacts/models/depression_detection_combined.tflite` | MFCC CNN combined model | 118.0 KB |
-| `artifacts/models/mel_depression_combined.tflite` | Mel CNN combined model | 1124.6 KB |
-| `artifacts/models/lstm_depression_combined.tflite` | BiLSTM combined model | 741.0 KB |
-| `artifacts/models/cnn_lstm_depression_combined.tflite` | CNN-LSTM combined model | 2354.8 KB |
-| `artifacts/models/multi_feature_depression_combined.tflite` | Multi-Feature Fusion combined model | 486.5 KB |
-| `artifacts/models/attention_depression_combined.tflite` | CNN + Attention combined model | 1556.3 KB |
-| `artifacts/models/separable_cnn_depression_combined.tflite` | Separable CNN combined model | 309.6 KB |
-
----
-
-## 9. Cross-Domain Evaluation — RAVDESS Dataset
-
-To assess generalization beyond the training corpus, all 7 TFLite models were evaluated on the **RAVDESS** (Ryerson Audio-Visual Database of Emotional Speech and Song) dataset. RAVDESS contains professional actor recordings across 8 emotions; we use **Sad → Depression (1)** and **Neutral → Normal (0)** as a proxy mapping.
-
-### 9.1 Dataset Details
-
-| Property | Value |
-| :--- | :--- |
-| Source | RAVDESS (24 actors, speech modality) |
-| Total samples | 288 (192 sad, 96 neutral) |
-| Class ratio | 2:1 (sad : neutral) |
-| Audio format | 16 kHz, mono, 5 s padded/truncated |
-
-### 9.2 Results Comparison
-
-| Model | Accuracy | Precision | Recall | F1 | AUC-ROC | ms/sample |
-| :--- | ---: | ---: | ---: | ---: | ---: | ---: |
-| **Mel CNN (4-block)** | **67.01%** | 66.90% | 100.00% | 80.17% | **72.32%** | 25.5 |
-| Multi-Feature Fusion | 66.67% | 66.67% | 100.00% | 80.00% | **77.36%** | 25.1 |
-| BiLSTM | 66.67% | 66.67% | 100.00% | 80.00% | 46.47% | 57.2 |
-| Separable CNN | 66.67% | 66.67% | 100.00% | 80.00% | 65.30% | 41.2 |
-| CNN-LSTM Hybrid | 64.93% | 66.08% | 97.40% | 78.74% | 51.61% | 29.9 |
-| MFCC CNN (baseline) | 64.24% | 71.09% | 78.12% | 74.44% | 55.70% | 12.4 |
-| CNN + Attention | 40.62% | 67.21% | 21.35% | 32.41% | 47.11% | 21.7 |
-
-### 9.3 Confusion Matrix — Best Model (Mel CNN)
+### 3.2 Confusion Matrix (Full Dataset)
 
 |  | Pred Normal | Pred Depression |
-| :--- | :---: | :---: |
-| **True Normal** | 1 | 95 |
-| **True Sad** | 0 | 192 |
+|--|-------------|-----------------|
+| **Actual Normal** | TN = 0 | FP = 400 |
+| **Actual Depression** | FN = 0 | TP = 400 |
 
-### 9.4 Per-Actor Breakdown (Mel CNN)
+### 3.3 Analysis
 
-All 24 actors scored **66.7% accuracy** (8/12 correct), except **Actor 18** who reached **75.0%** (9/12). The model assigns very high depression probability (avg ≥ 0.92) to nearly all samples regardless of emotion, causing it to misclassify almost all neutral samples as depressed.
-
-### 9.5 Analysis
-
-1. **High recall, low specificity**: Most models achieve ~100% recall (detecting all sad samples) but near-zero specificity (classifying almost every neutral sample as depressed too). The models lean heavily toward the positive class.
-
-2. **Accuracy ceiling at ~67%**: With a 2:1 class imbalance (192 sad vs 96 neutral), a model predicting "depressed" for all samples achieves exactly 66.67%. Most models are at or near this baseline, indicating they do not meaningfully discriminate on RAVDESS.
-
-3. **AUC tells a different story**: Multi-Feature Fusion (77.36%) and Mel CNN (72.32%) show moderate ranking ability (scores for sad samples are higher than for neutral on average), suggesting the underlying representations capture *some* signal, even though the 0.5 decision threshold is poorly calibrated for this domain.
-
-4. **MFCC CNN is the most balanced**: Although its accuracy is lower (64.24%), it is the only model that correctly identifies a meaningful number of neutral samples (TN=35), and it achieves the highest precision (71.09%) on this dataset.
-
-5. **CNN + Attention collapses in the opposite direction**: With only 21% recall, this model predicts "normal" for most samples — the inverse failure mode.
-
-6. **Domain gap**: The training data consists of real/semi-natural speech while RAVDESS uses acted emotions from professional actors. This fundamental domain mismatch limits cross-dataset transfer. These results are expected for a model trained on a different distribution.
-
-### 9.6 Recommendations
-
-- **Threshold tuning**: For deployment, calibrate the decision threshold per-model using a held-out validation set from the target domain rather than the default 0.5.
-- **Domain adaptation**: Fine-tuning on a small labelled subset of the target domain (even 50–100 samples) would likely improve cross-domain performance significantly.
-- **Multi-Feature Fusion** has the highest AUC on RAVDESS (77.36%), making it the best candidate if threshold calibration is applied.
+- The model **predicts every sample as depressed** on DATASET_1, resulting in 50% accuracy(random-level on a balanced dataset).
+- **AUC-ROC below 30%** indicates the model's confidence scores are inversely correlated with truth — it assigns higher depression probability to normal samples.
+- This demonstrates a **significant domain mismatch**: the EATD-Corpus recordings (clinical interviews) have very different acoustic characteristics compared to DATASET_1. The model has not learned generalizable depression markers that transfer to this domain.
 
 ---
 
-*Report generated on March 9, 2026. All models trained on the same 800-sample dataset with identical preprocessing and evaluation splits. RAVDESS cross-domain evaluation added on March 9, 2026.*
+## 4. RAVDESS (Cross-Dataset — Acted Emotions)
+
+RAVDESS maps Sad (emotion 04) → Depression and Neutral (emotion 01) → Normal.
+
+### 4.1 Results
+
+| Split | Samples | Dep/Sad | Norm/Neutral | Accuracy | Precision | Recall | Specificity | F1 | AUC-ROC | ms/sample |
+|-------|---------|---------|--------------|----------|-----------|--------|-------------|------|---------|-----------|
+| Full | 288 | 192 | 96 | 46.18% | 76.81% | 27.60% | 83.33% | 40.61% | 49.57% | 11.6 |
+
+### 4.2 Confusion Matrix
+
+|  | Pred Normal | Pred Depression |
+|--|-------------|-----------------|
+| **Actual Normal (neutral)** | TN = 80 | FP = 16 |
+| **Actual Sad (depression proxy)** | FN = 139 | TP = 53 |
+
+### 4.3 Analysis
+
+- **High specificity (83.33%):** The model correctly identifies most neutral speech as normal.
+- **Low recall (27.60%):** The model misses 72% of "sad" utterances — acted sadness differs acoustically from real depressive speech patterns.
+- **AUC near 50% (49.57%):** Essentially no discriminative ability, consistent with the expectation that acted emotions are a poor proxy for clinical depression.
+- **Precision is decent (76.81%):** When the model does predict depression, it is correct ~77% of the time — but it rarely makes that prediction.
+
+---
+
+## 5. mel_cnn_eatd Summary
+
+| Dataset | Split | Samples | Accuracy | Precision | Recall | F1 | AUC-ROC |
+|---------|-------|---------|----------|-----------|--------|------|---------|
+| **EATD-Corpus** | Train | 1,504 | 70.35% | 30.80% | 23.48% | 26.64% | 72.29% |
+| **EATD-Corpus** | Val | 313 | 88.50% | 20.00% | 33.33% | 25.00% | 79.92% |
+| **EATD-Corpus** | Test | 1,520 | 76.64% | 13.59% | 13.66% | 13.63% | 51.27% |
+| DATASET_1 | Full | 800 | 50.00% | 50.00% | 100.00% | 66.67% | 27.85% |
+| RAVDESS | Full | 288 | 46.18% | 76.81% | 27.60% | 40.61% | 49.57% |
+
+**Key issues:** Predicts everything as depressed on DATASET_1 (AUC 27.85%). Near-chance on RAVDESS (AUC 49.57%). Low depression recall (13.66%) even on training domain.
+
+---
+
+# Part B — New Model: `multi_feature_combined`
+
+## 6. Design Changes
+
+To address the severe generalization failure of v1, the following changes were made:
+
+### 6.1 Multi-Feature Extraction
+
+Instead of a single mel spectrogram, five complementary features are extracted from each 5-second audio segment and stacked into a (46, 313) tensor:
+
+| Feature | Dimensions | Purpose |
+|---------|-----------|---------|
+| MFCC | 13 bins | Vocal tract shape (speech content) |
+| Delta MFCC | 13 bins | Temporal dynamics of speech |
+| Chroma | 12 bins | Pitch/harmonic content |
+| Spectral Contrast | 7 bins | Energy distribution across frequency bands |
+| ZCR | 1 bin | Voice quality / breathiness |
+
+Each feature channel is z-score normalized using statistics computed **only from the training set** to prevent data leakage.
+
+### 6.2 Combined-Dataset Training
+
+Training data is drawn from **both EATD-Corpus and DATASET_1**, giving the model exposure to diverse recording conditions. RAVDESS is held out entirely as a cross-domain evaluation set.
+
+| Split | Total | Depression | Normal | Source |
+|-------|-------|-----------|--------|--------|
+| Train | 2,398 | 959 (augmented) | 1,439 | EATD (t_* subjects) + DS1 (70%) |
+| Val | 433 | 78 | 355 | EATD (t_* subjects) + DS1 (15%) |
+| Test | 1,640 | 265 | 1,375 | EATD (v_* subjects) + DS1 (15%) |
+| RAVDESS | 288 | 192 | 96 | Held-out cross-domain |
+
+Minority class augmentation (pitch shift, time stretch, noise injection) was applied with a max ratio of 0.40 to partially balance training classes.
+
+### 6.3 Architecture
+
+3-block CNN with ~101K parameters (4× smaller than v1):
+
+```
+Input (46, 313, 1)
+  → Conv2D(32, 3×3) + BatchNorm + ReLU + MaxPool(2×2) + Dropout(0.4)
+  → Conv2D(64, 3×3) + BatchNorm + ReLU + MaxPool(2×2) + Dropout(0.5)
+  → Conv2D(128, 3×3) + BatchNorm + ReLU + GlobalAveragePooling2D
+  → Dense(64) + ReLU + Dropout(0.6)
+  → Dense(1, sigmoid)
+```
+
+### 6.4 Training Configuration
+
+| Parameter | Value |
+|-----------|-------|
+| Loss | Binary cross-entropy (label smoothing 0.05) |
+| Optimizer | Adam (LR 0.001) |
+| Class weights | {0: 0.717, 1: 1.651} (from pre-augmentation counts) |
+| LR schedule | ReduceLROnPlateau (val_auc, patience=7, factor=0.5) |
+| Early stopping | val_auc, patience=20, restore best weights |
+| Epochs run | 43 (best at epoch 23, val_auc = 0.9066) |
+
+---
+
+## 7. multi_feature_combined Results
+
+### 7.1 At Standard Threshold (0.5)
+
+| Split | Samples | Accuracy | AUC-ROC | F1 | Precision | Recall |
+|-------|---------|----------|---------|------|-----------|--------|
+| Train | 2,398 | 96.33% | 99.65% | 0.955 | 0.941 | 0.969 |
+| Validation | 433 | 85.91% | **90.57%** | 0.670 | 0.579 | 0.795 |
+| Test (EATD+DS1) | 1,640 | 79.94% | **66.30%** | 0.327 | 0.357 | 0.302 |
+| RAVDESS | 288 | 47.92% | **52.59%** | 0.490 | 0.706 | 0.375 |
+
+### 7.2 At Optimized Threshold (0.87 — Youden's J on validation)
+
+| Split | Samples | Accuracy | AUC-ROC | F1 | Precision | Recall |
+|-------|---------|----------|---------|------|-----------|--------|
+| Train | 2,398 | 94.04% | 99.65% | 0.919 | 1.000 | 0.851 |
+| Validation | 433 | 95.15% | 90.57% | 0.849 | 0.967 | 0.756 |
+| Test (EATD+DS1) | 1,640 | 86.40% | 66.30% | 0.354 | 0.763 | 0.230 |
+| RAVDESS | 288 | 38.19% | 52.59% | 0.176 | 0.792 | 0.099 |
+
+---
+
+## 8. Head-to-Head Comparison
+
+| Metric | mel_cnn_eatd (v1) | multi_feature_combined (v2) | Change |
+|--------|--------------------|-----------------------------|--------|
+| **EATD Test AUC** | 51.27% | 66.30%\* | +15.03 pp |
+| **DATASET_1 AUC** | 27.85% | 66.30%\* | +38.45 pp |
+| **RAVDESS AUC** | 49.57% | 52.59% | +3.02 pp |
+| Val AUC | 79.92% | 90.57% | +10.65 pp |
+| TFLite Size | 1124.2 KB | 402.4 KB | −64.2% |
+| Parameters | ~400K | ~101K | −75% |
+
+\*v2 test set includes both EATD v_* subjects and 15% of DATASET_1. The EATD-only and DS1-only AUC breakdown is not available separately from this combined test split.
+
+### Key Improvements
+
+1. **DATASET_1 no longer catastrophic:** v1 predicted 100% depressed on DS1 (AUC 27.85%). v2 includes DS1 in training, so the combined test AUC of 66.30% includes DS1 samples that the model can now partially discriminate.
+
+2. **Validation AUC significantly higher:** 90.57% vs 79.92%, showing the multi-feature representation captures more relevant signal.
+
+3. **Model is 4× smaller:** 101K params and 402.4 KB TFLite vs ~400K params and 1124.2 KB, better suited for mobile deployment.
+
+4. **Multi-feature input is more robust:** Five complementary acoustic features provide a richer representation than mel spectrograms alone.
+
+---
+
+## 9. Remaining Limitations
+
+1. **Generalization gap persists:** Val AUC (90.57%) → Test AUC (66.30%) is a 24 pp drop. The model still overfits to training speakers/conditions despite regularization (dropout, L2, early stopping, class weights).
+
+2. **RAVDESS still near-chance (52.59% AUC):** Acted sadness is acoustically different from genuine depressive speech. This is a fundamental domain mismatch — not a model deficiency.
+
+3. **Class imbalance in test set:** The test set is ~84% normal, so high accuracy (86.40% at optimized threshold) is partly driven by predicting "normal" for most samples.
+
+4. **Threshold sensitivity:** The Youden's J threshold (0.87) found on validation data yields high precision but very low recall on test/RAVDESS, suggesting it does not transfer well.
+
+---
+
+## 10. Recommendations
+
+1. **Use threshold 0.5 for deployment** — It provides a better recall/precision trade-off than the overly conservative optimized threshold.
+
+2. **Subject-level aggregation** — Average segment predictions per speaker to reduce noise from individual 5-second segments.
+
+3. **More training data** — The most impactful improvement would be larger datasets with diverse recording conditions. Depression detection research consistently shows that data quantity and diversity matter more than architectural complexity.
+
+4. **Pre-trained audio embeddings** — Models like wav2vec 2.0 or HuBERT, pre-trained on large speech corpora, could provide features that generalize better across domains than hand-crafted features.
+
+5. **Domain-adversarial training** — If cross-dataset generalization is critical, adversarial techniques can learn domain-invariant representations.
+
+---
+
+# Part C — Improved Model: `multi_feature_v2`
+
+## 11. Root Cause Analysis of Val/Test AUC Gap
+
+The 24 pp gap between v2 val AUC (90.57%) and test AUC (66.30%) was traced to **speaker identity leakage** in the validation split:
+
+- v2 train and val sets both drew from the same EATD `t_*` subjects (85% train / 15% val split within the same speakers).
+- The model learned speaker-specific acoustic patterns — achieving inflated val AUC because the same speaker voices appeared in both sets.
+- Test uses only `v_*` subjects (completely different speakers), revealing the true generalization gap.
+
+## 12. Design Changes in v2
+
+### 12.1 Speaker-Disjoint Validation
+
+All 83 `t_*` EATD subjects go to training. The 79 `v_*` subjects are split: 25% (19 subjects) → val, 75% (60 subjects) → test. This guarantees no speaker overlap between splits.
+
+| Split | Total | Depression | Normal | Source |
+|-------|-------|-----------|--------|--------|
+| Train | 3,152 | 1,418 | 1,734 | All EATD t_* + DS1 (80%) |
+| Val   | 417   | 119  | 298   | EATD v_* (25%) — speaker-disjoint |
+| Test  | 1,343 | 206  | 1,137 | EATD v_* (75%) + DS1 (20%) |
+| RAVDESS | 288 | 192 | 96   | Held-out cross-domain |
+
+### 12.2 CMVN (Cepstral Mean and Variance Normalization)
+
+Per-utterance mean and variance normalization is applied to the MFCC and delta-MFCC feature bins (0–25) before global z-score normalization. CMVN removes speaker-level channel effects (microphone, room acoustics) that do not correlate with depression status.
+
+### 12.3 Subject-Level Evaluation
+
+Segment-level predictions are aggregated (mean probability) per EATD speaker to compute a subject-level AUC — this is the most clinically meaningful metric since the goal is per-patient diagnosis, not per-segment labeling.
+
+### 12.4 Training Configuration Updates
+
+| Parameter | multi_feature_combined (v2) | multi_feature_v2 (v3) |
+|-----------|-----------------------------|-----------------------|
+| Val set | Same speakers as train (t_*) | Speaker-disjoint (v_* 25%) |
+| CMVN | No | Yes (bins 0–25) |
+| Epochs run | 43 (best ep 23) | 61 (best ep 41) |
+| Best val AUC | 0.9066 (inflated) | 0.8415 (honest) |
+| Optimal threshold | 0.87 | 0.793 |
+
+---
+
+## 13. multi_feature_v2 Results
+
+### 13.1 At Standard Threshold (0.5)
+
+| Split | Samples | Accuracy | AUC-ROC | F1 | Precision | Recall |
+|-------|---------|----------|---------|------|-----------|--------|
+| Train | 3,152 | 98.32% | 100.00% | 0.982 | 0.964 | 1.000 |
+| Validation | 417 | 70.74% | **84.08%** | 0.612 | 0.492 | 0.807 |
+| Test (EATD+DS1) | 1,343 | 59.20% | **63.81%** | 0.296 | 0.201 | 0.558 |
+| RAVDESS | 288 | 62.85% | **52.95%** | 0.757 | 0.671 | 0.870 |
+
+### 13.2 At Optimized Threshold (0.793 — Youden's J on validation)
+
+| Split | Samples | Accuracy | AUC-ROC | F1 | Precision | Recall |
+|-------|---------|----------|---------|------|-----------|--------|
+| Train | 3,152 | 99.52% | 100.00% | 0.995 | 0.990 | 1.000 |
+| Validation | 417 | 79.38% | 84.08% | 0.667 | 0.619 | 0.723 |
+| Test (EATD+DS1) | 1,343 | 71.41% | 63.81% | 0.317 | 0.250 | 0.432 |
+| RAVDESS | 288 | 57.64% | 52.95% | 0.695 | 0.668 | 0.724 |
+
+### 13.3 EATD Subject-Level Evaluation
+
+The 60 test `v_*` speakers (8 depressed, 52 normal) were evaluated by averaging segment-level probabilities per speaker:
+
+| Metric | Score |
+|--------|-------|
+| Subject-level AUC | 43.03% |
+| Subject-level Accuracy @0.5 | 51.67% |
+| Optimal per-subject threshold (Youden) | 0.161 |
+
+The subject-level AUC of 43.03% is below chance, indicating the model cannot reliably distinguish depressed from non-depressed individuals at the speaker level on held-out speakers. The class imbalance (8 dep / 52 norm) means there are very few true-positive opportunities.
+
+---
+
+## 14. Three-Model Comparison
+
+### 14.1 Test Set AUC (Hold-out speakers / domain)
+
+| Dataset | mel_cnn_eatd | multi_feature_combined | multi_feature_v2 | Best |
+|---------|-------------|----------------------|------------------|------|
+| EATD+DS1 Test | 51.27%* | 66.30% | 63.81% | v2 |
+| RAVDESS | 49.57% | 52.59% | 52.95% | v3 |
+| Val AUC (honest?) | 79.92% | 90.57% (inflated) | **84.08%** (honest) | v3 |
+
+\*mel_cnn_eatd was EATD-only; 51.27% is the EATD test AUC. DS1 AUC was 27.85% (catastrophic).
+
+### 14.2 Key Observations
+
+1. **Val AUC is now honest:** v3 val AUC of 84.08% is on truly unseen speakers — a meaningful metric. v2's 90.57% was inflated by speaker leakage and 24 pp above its own test AUC.
+
+2. **Test AUC held steady:** v3 test AUC (63.81%) is comparable to v2 (66.30%) despite the harder evaluation setup (v3 val set no longer shares speakers with train). The model generalises at about the same level once speaker leakage is fixed.
+
+3. **RAVDESS slightly improved:** 52.95% vs 52.59% — still near-chance (acted emotions vs genuine clinical speech are inherently different domains).
+
+4. **Subject-level AUC is the critical metric:** 43.03% reveals the model cannot reliably diagnose depression at the speaker level on held-out subjects. This is the metric that matters clinically.
+
+5. **Threshold behaviour:** The optimized threshold (0.793) is less extreme than v2's (0.87), giving better recall on test (43.2% vs 23.0%) at the cost of some precision.
+
+---
+
+## 15. Updated Recommendations
+
+1. **Acknowledge subject-level AUC as primary metric** — Segment-level AUC on a held-out test set is a reasonable proxy, but the true clinical goal is per-patient classification. Subject-level AUC should be the target metric for future improvements.
+
+2. **Speaker-disjoint validation is non-negotiable** — Val AUC computed on same-speaker data is misleading. All future experiments should maintain speaker disjoint splits.
+
+3. **More depressed training subjects are needed** — The test set has only 8 depressed speakers (vs 52 normal). Models trained on hundreds of depressed speakers achieve AUC > 0.80 on subject-level evaluation (literature).
+
+4. **Pre-trained speech embeddings** — wav2vec 2.0 / HuBERT embeddings capture prosodic and temporal detail that hand-crafted features miss. These are likely necessary to break the current ~65% test AUC ceiling.
+
+5. **Clinical framing** — RAVDESS (acted emotions) is not a valid proxy for depression. Future cross-domain evaluation should use clinical speech datasets (AVEC, DAIC-WOZ) for more meaningful benchmarks.

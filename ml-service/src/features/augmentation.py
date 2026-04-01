@@ -1,6 +1,16 @@
 """
 Audio data augmentation for depression detection.
 
+WHY AUGMENTATION?
+The depressed class is heavily underrepresented (~16% of samples).
+If we train as-is, the model learns to just predict "normal" for everything
+and still scores 84% accuracy — useless for our purpose.
+
+Augmentation artificially creates more depressed samples by slightly
+modifying existing ones.  The modifications are small enough that the
+new samples still sound like genuine depressed speech, but different
+enough that the model can't just memorize the originals.
+
 Provides waveform-level augmentations (pitch shift, time stretch,
 noise injection) applied to raw audio segments *before* feature
 extraction.  Augmentations are applied only to minority-class
@@ -15,16 +25,21 @@ def pitch_shift(audio: np.ndarray, sr: int = 16000, n_steps: float = 1.0) -> np.
     """
     Shift pitch by resampling.
 
+    Changing pitch slightly (e.g. +1 semitone) creates a new sample that
+    sounds like a slightly higher-pitched version of the same person.
+    The model must learn features that are robust to small pitch differences,
+    which improves generalization to new speakers.
+
     A positive n_steps raises pitch; negative lowers it.
     Uses simple linear-interpolation resampling (no external deps).
     """
-    factor = 2.0 ** (n_steps / 12.0)
+    factor = 2.0 ** (n_steps / 12.0)  # semitone to frequency ratio conversion
     indices = np.arange(0, len(audio), factor)
     indices = indices[indices < len(audio) - 1]
     int_part = indices.astype(int)
     frac_part = indices - int_part
     shifted = audio[int_part] * (1 - frac_part) + audio[int_part + 1] * frac_part
-    # Resize back to original length
+    # Resize back to original length so input/output shapes match
     target_indices = np.linspace(0, len(shifted) - 1, len(audio))
     int_t = target_indices.astype(int)
     int_t = np.clip(int_t, 0, len(shifted) - 2)
@@ -36,16 +51,22 @@ def time_stretch(audio: np.ndarray, rate: float = 0.9) -> np.ndarray:
     """
     Stretch/compress audio in time via linear interpolation.
 
+    Makes the same speech slightly slower or faster without changing pitch.
+    Simulates the natural variation in speech rate between people.
+    Depressed speech is typically slower — but training only on slow speech
+    would overfit to that exact speed.  This makes the model learn the
+    *pattern* of slow speech, not just the literal length of pauses.
+
     rate < 1.0 → slower (longer), rate > 1.0 → faster (shorter).
     Output is resized to original length.
     """
-    stretched_len = int(len(audio) / rate)
+    stretched_len = int(len(audio) / rate)  # temporary stretched length
     indices = np.linspace(0, len(audio) - 1, stretched_len)
     int_part = indices.astype(int)
     int_part = np.clip(int_part, 0, len(audio) - 2)
     frac_part = indices - int_part
     stretched = audio[int_part] * (1 - frac_part) + audio[int_part + 1] * frac_part
-    # Resize to original length
+    # Resize back to original length
     target_indices = np.linspace(0, len(stretched) - 1, len(audio))
     int_t = target_indices.astype(int)
     int_t = np.clip(int_t, 0, len(stretched) - 2)
@@ -54,10 +75,16 @@ def time_stretch(audio: np.ndarray, rate: float = 0.9) -> np.ndarray:
 
 
 def add_noise(audio: np.ndarray, noise_factor: float = 0.005) -> np.ndarray:
-    """Add Gaussian noise to the audio signal."""
+    """Add Gaussian noise to the audio signal.
+
+    Simulates real-world recording conditions: background hum, mic noise, etc.
+    Without this, the model might overfit to the clean studio-quality clips
+    in EATD-Corpus and fail on noisier phone recordings.
+    noise_factor=0.005 is subtle — barely audible to a human ear.
+    """
     rng = np.random.default_rng()
     noise = rng.normal(0, noise_factor, size=len(audio)).astype(np.float32)
-    return np.clip(audio + noise, -1.0, 1.0).astype(np.float32)
+    return np.clip(audio + noise, -1.0, 1.0).astype(np.float32)  # clip to valid range [-1, 1]
 
 
 def augment_segment(

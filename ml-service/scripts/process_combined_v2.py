@@ -63,6 +63,16 @@ def apply_cmvn(X: np.ndarray, n_mfcc: int = N_MFCC) -> np.ndarray:
     """
     Per-utterance Cepstral Mean/Variance Normalisation (CMVN).
 
+    Problem: different microphones, rooms, and people have a constant
+    offset in their MFCC values.  Person A might always have higher
+    MFCC values than Person B just because of their microphone —
+    not because they are depressed.
+
+    CMVN fixes this by subtracting each clip's own mean and dividing
+    by its own standard deviation (per MFCC bin, across time).
+    After CMVN, the model only sees *relative* patterns in the voice,
+    not absolute microphone-level offsets — so it generalizes better.
+
     Normalises MFCC (bins 0..n_mfcc-1) and delta-MFCC (bins n_mfcc..2*n_mfcc-1)
     independently per utterance over the time axis.  Leaves chroma, spectral
     contrast, and ZCR bins untouched.
@@ -77,10 +87,10 @@ def apply_cmvn(X: np.ndarray, n_mfcc: int = N_MFCC) -> np.ndarray:
     X_out = X.copy()
     for i in range(len(X_out)):
         for dim in range(n_mfcc * 2):   # MFCC (0-12) + delta-MFCC (13-25)
-            row = X_out[i, dim, :]
-            m = row.mean()
-            s = row.std()
-            X_out[i, dim, :] = (row - m) / (s + 1e-8)
+            row = X_out[i, dim, :]      # one frequency bin across all 313 time steps
+            m = row.mean()              # average value of this bin for this clip
+            s = row.std()               # spread of values for this bin
+            X_out[i, dim, :] = (row - m) / (s + 1e-8)  # normalize: zero mean, unit variance
     return X_out
 
 
@@ -203,14 +213,27 @@ def load_ravdess():
 # ──────────────────────────────────────────────────────────────────────────────
 
 def compute_scaler(X: np.ndarray):
-    """Per-frequency-bin mean and std over all training samples and time."""
-    mean = X.mean(axis=(0, 2), keepdims=True)
-    std  = X.std(axis=(0, 2),  keepdims=True)
-    std  = np.where(std < 1e-8, 1.0, std)
+    """Per-frequency-bin mean and std over all training samples and time.
+
+    This is the global Z-score scaler.  Unlike CMVN (which is per-clip),
+    this computes statistics across the ENTIRE training set.
+    It ensures that across all 46 feature rows, each row has approximately
+    zero mean and unit variance — so no single feature dominates the CNN
+    just because it happens to have larger numbers.
+
+    CRITICAL: these stats are computed ONLY from training data.
+    They are then applied to validation, test, and live audio too.
+    If we recomputed them on val/test, the model would see information
+    from those splits during preprocessing — that's called data leakage.
+    """
+    mean = X.mean(axis=(0, 2), keepdims=True)   # mean per frequency bin (across all clips and time)
+    std  = X.std(axis=(0, 2),  keepdims=True)   # std per frequency bin
+    std  = np.where(std < 1e-8, 1.0, std)        # avoid division by zero for silent/flat features
     return mean.squeeze(), std.squeeze()   # (46,), (46,)
 
 
 def normalize(X: np.ndarray, mean: np.ndarray, std: np.ndarray) -> np.ndarray:
+    # Apply the saved scaler: shift and scale each of the 46 feature rows
     return (X - mean[np.newaxis, :, np.newaxis]) / std[np.newaxis, :, np.newaxis]
 
 

@@ -9,6 +9,9 @@ Quick-start commands:
     python main.py export-recurrent --cell gru   Export trained recurrent model to TFLite
     python main.py test-recurrent                Test GRU/BiLSTM TFLite models on EATD
     python main.py test-recurrent --sweep        Find best threshold then evaluate
+    python main.py train-hlgnet                  Train HLG-Net (PyTorch) on DAICWOZ
+    python main.py train-hlgnet --dataset combined  Train on all datasets
+    python main.py evaluate-hlgnet               Evaluate HLG-Net on test sets
     python main.py train-all                     Train all architectures (RAVDESS)
     python main.py evaluate                      Evaluate all TFLite models
     python main.py evaluate-subjects             Subject-level evaluation (aggregated)
@@ -58,6 +61,12 @@ def main():
     elif command == "evaluate-subjects":
         from scripts.evaluate_subject_level import main as eval_subj_main
         eval_subj_main()
+    elif command == "train-hlgnet":
+        from scripts.train_hlgnet import main as train_hlgnet_main
+        train_hlgnet_main()
+    elif command == "evaluate-hlgnet":
+        from scripts.evaluate_hlgnet import main as eval_hlgnet_main
+        eval_hlgnet_main()
     elif command == "list":
         from src.models.architectures import MODEL_REGISTRY
         print("Available architectures:")

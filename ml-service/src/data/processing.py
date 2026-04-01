@@ -64,28 +64,50 @@ def extract_multi_features(
     """
     Extract all five feature types from a single audio segment.
 
+    Think of each feature as a different "lens" through which we look at the voice.
+    No single lens captures everything, so we use all five together.
+
     Returns dict with keys: mfcc, delta_mfcc, chroma, spectral_contrast, zcr.
     Each value has shape (freq_bins, target_time).
     """
-    # MFCC (n_mfcc, T)
+    # \u2500\u2500 MFCC (Mel-Frequency Cepstral Coefficients) \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+    # MFCCs describe the overall "shape" of the vocal tract at each moment.
+    # Depressed speech tends to have different formant patterns (flatter,\n    # less resonant) than healthy speech.
+    # Shape: (13, 313) \u2014 13 coefficients \u00d7 313 time frames
     mfcc = librosa.feature.mfcc(y=audio, sr=sr, n_mfcc=n_mfcc,
                                  n_fft=n_fft, hop_length=hop_length)
     mfcc = _pad_or_truncate(mfcc, target_time)
 
-    # Delta MFCC (n_mfcc, T)
+    # \u2500\u2500 Delta MFCC \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+    # The derivative (rate of change) of MFCC over time.
+    # Captures how the voice is *moving* \u2014 depressed speech tends to be
+    # monotone (low delta-MFCC) while healthy speech has more variation.
+    # Shape: (13, 313)
     delta_mfcc = librosa.feature.delta(mfcc)
 
-    # Chroma (12, T)
+    # \u2500\u2500 Chroma \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+    # Describes which musical pitch classes (C, C#, D, ...) are present.
+    # Even in speech, pitch energy distribution is measurably different
+    # in depressed speakers \u2014 often shifted to lower pitch classes.
+    # Shape: (12, 313)
     chroma = librosa.feature.chroma_stft(y=audio, sr=sr,
                                           n_fft=n_fft, hop_length=hop_length)
     chroma = _pad_or_truncate(chroma, target_time)
 
-    # Spectral contrast (7, T)
+    # \u2500\u2500 Spectral Contrast \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+    # Measures the difference between peaks and valleys in the spectrum
+    # across 7 frequency sub-bands.  Depressed speech often shows a
+    # "flatter" spectrum \u2014 less contrast between loud and quiet frequencies.
+    # Shape: (7, 313)
     contrast = librosa.feature.spectral_contrast(y=audio, sr=sr,
                                                   n_fft=n_fft, hop_length=hop_length)
     contrast = _pad_or_truncate(contrast, target_time)
 
-    # Zero crossing rate (1, T)
+    # \u2500\u2500 ZCR (Zero Crossing Rate) \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+    # How often the audio waveform crosses zero per frame.
+    # High ZCR = breathy, noisy, or whispered voice.
+    # Depressed speakers often show reduced vocal effort \u2014 higher breathiness.
+    # Shape: (1, 313)
     zcr = librosa.feature.zero_crossing_rate(y=audio, frame_length=n_fft,
                                               hop_length=hop_length)
     zcr = _pad_or_truncate(zcr, target_time)

@@ -38,6 +38,9 @@ class AudioDataLoader:
         """
         Load a single audio file, normalize and pad/truncate to fixed length.
 
+        Every audio file in the world has different length, volume, and sample rate.
+        This function makes them all identical so the model always sees the same input shape.
+
         Args:
             audio_path: Path to audio file
 
@@ -45,19 +48,25 @@ class AudioDataLoader:
             Audio array of shape (target_length,) or None if failed
         """
         try:
+            # librosa.load: reads the audio file and resamples it to our target rate (16kHz).
+            # sr=self.sample_rate forces resampling so all clips have the same frequency resolution.
             y, sr = librosa.load(
                 audio_path, sr=self.sample_rate, mono=self.mono, duration=self.duration
             )
 
-            # Normalize amplitude
+            # Scale the waveform so the loudest peak = 1.0
+            # This removes volume differences between speakers (a quiet voice vs a loud one
+            # should look the same to the model \u2014 volume isn't a depression marker we want).
             y = librosa.util.normalize(y)
 
-            # Trim silence
+            # Remove leading/trailing silence (anything >20dB below peak is trimmed).
+            # This avoids the model learning from silence at the start/end of recordings.
             y_trimmed, _ = librosa.effects.trim(y, top_db=20)
             if len(y_trimmed) > 0:
                 y = y_trimmed
 
-            # Pad or truncate to fixed length
+            # All clips must be exactly 80,000 samples (5s \u00d7 16kHz).
+            # Shorter clips get zero-padded at the end; longer clips get cut off.
             if len(y) < self.target_length:
                 y = np.pad(y, (0, self.target_length - len(y)))
             else:

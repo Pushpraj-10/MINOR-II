@@ -1,6 +1,10 @@
 # Core ML/DL Framework
 tensorflow>=2.13.0,<2.16.0
 
+# PyTorch (HLG-Net)
+torch>=2.0.0
+torchaudio>=2.0.0
+
 # Audio Processing
 librosa>=0.10.0
 soundfile>=0.12.0  # Required by librosa for audio I/O

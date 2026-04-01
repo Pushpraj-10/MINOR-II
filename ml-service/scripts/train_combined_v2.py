@@ -45,6 +45,12 @@ def apply_mixup(X: np.ndarray, y: np.ndarray,
     """
     Offline Mixup: interpolate pairs of training samples.
 
+    Mixup is a data augmentation trick:
+    instead of feeding the model a real sample, we blend two samples together
+    (e.g. 70% of sample A + 30% of sample B) and give it a blended label too.
+    This forces the model to behave smoothly between examples, reducing
+    overconfidence on specific training voices.
+
     Creates frac*N synthetic samples by linearly mixing feature maps and
     labels with a Beta(alpha, alpha) weight.  Mixed examples are appended
     to the original data and the combined array is shuffled.
@@ -54,14 +60,14 @@ def apply_mixup(X: np.ndarray, y: np.ndarray,
     if rng is None:
         rng = np.random.default_rng(42)
     n = len(X)
-    n_mix = int(n * frac)
-    idx1 = rng.integers(0, n, n_mix)
-    idx2 = rng.integers(0, n, n_mix)
-    lam  = rng.beta(alpha, alpha, n_mix).astype(np.float32)
-    lam_x = lam[:, np.newaxis, np.newaxis, np.newaxis]   # broadcast over H,W,C
-    X_mix = lam_x * X[idx1] + (1 - lam_x) * X[idx2]
-    y_mix = lam  * y[idx1]  + (1 - lam)   * y[idx2]
-    perm = rng.permutation(n + n_mix)
+    n_mix = int(n * frac)                            # how many blended samples to create
+    idx1 = rng.integers(0, n, n_mix)                 # pick n_mix random sample indices
+    idx2 = rng.integers(0, n, n_mix)                 # pick another n_mix random indices to blend with
+    lam  = rng.beta(alpha, alpha, n_mix).astype(np.float32)  # blend ratio per pair, drawn from Beta distribution
+    lam_x = lam[:, np.newaxis, np.newaxis, np.newaxis]   # reshape so it can multiply (H, W, C) tensors
+    X_mix = lam_x * X[idx1] + (1 - lam_x) * X[idx2]    # blended feature grid
+    y_mix = lam  * y[idx1]  + (1 - lam)   * y[idx2]     # blended label (e.g. 0.7 depressed)
+    perm = rng.permutation(n + n_mix)                    # shuffle real + blended together
     return np.concatenate([X, X_mix])[perm], np.concatenate([y, y_mix])[perm]
 
 
@@ -73,35 +79,51 @@ def build_model(input_shape, dropout=DROPOUT_RATE) -> keras.Model:
     """
     3-block CNN identical to multi_feature_combined (~101K params).
 
+    The model treats the 46×313 feature grid like an image.
+    Convolutional layers detect local patterns (e.g. a specific MFCC shape
+    at a specific time), deeper layers combine those into higher-level
+    patterns (e.g. sustained monotone speech across the full 5 seconds).
+
     Input shape: (46, 313, 1)
       Block 1: Conv2D(32) + BN + MaxPool + Dropout(0.4)
       Block 2: Conv2D(64) + BN + MaxPool + Dropout(0.5)
       Block 3: Conv2D(128) + BN + GlobalAveragePool
       Head:    Dense(64) + Dropout(0.6) → Dense(1, sigmoid)
     """
+    # L2 regularization penalizes large weights — prevents the model from
+    # memorizing training speakers instead of learning generalizable patterns
     l2 = keras.regularizers.l2(1e-4)
     inputs = keras.layers.Input(shape=input_shape)
     x = inputs
 
+    # ── Block 1: Detect simple local patterns (edges in the feature map) ──
+    # Conv2D scans the grid with 32 different 3×3 filters
     x = keras.layers.Conv2D(32, (3, 3), activation="relu", padding="same",
                             kernel_regularizer=l2)(x)
-    x = keras.layers.BatchNormalization()(x)
-    x = keras.layers.MaxPooling2D((2, 2))(x)
-    x = keras.layers.Dropout(0.4)(x)
+    x = keras.layers.BatchNormalization()(x)   # normalize activations → stable training
+    x = keras.layers.MaxPooling2D((2, 2))(x)   # halve spatial size → (23, 156, 32)
+    x = keras.layers.Dropout(0.4)(x)           # randomly zero 40% of neurons each step
 
+    # ── Block 2: Detect more complex patterns (combinations of Block 1 features) ──
     x = keras.layers.Conv2D(64, (3, 3), activation="relu", padding="same",
                             kernel_regularizer=l2)(x)
     x = keras.layers.BatchNormalization()(x)
-    x = keras.layers.MaxPooling2D((2, 2))(x)
+    x = keras.layers.MaxPooling2D((2, 2))(x)   # halve again → (11, 78, 64)
     x = keras.layers.Dropout(0.5)(x)
 
+    # ── Block 3: High-level abstraction across the full feature map ──
     x = keras.layers.Conv2D(128, (3, 3), activation="relu", padding="same",
                             kernel_regularizer=l2)(x)
     x = keras.layers.BatchNormalization()(x)
-    x = keras.layers.GlobalAveragePooling2D()(x)
+    # GlobalAveragePooling: collapses the entire spatial map into a single
+    # 128-number vector — one number summarizing each filter's average response
+    x = keras.layers.GlobalAveragePooling2D()(x)   # → (128,)
 
+    # ── Classification head: maps 128 features → single depression probability ──
     x = keras.layers.Dense(64, activation="relu", kernel_regularizer=l2)(x)
-    x = keras.layers.Dropout(0.6)(x)
+    x = keras.layers.Dropout(0.6)(x)  # heavy dropout here — most overfitting happens at the head
+    # sigmoid outputs a number between 0 and 1
+    # values > 0.5 → depressed, values <= 0.5 → normal
     out = keras.layers.Dense(1, activation="sigmoid")(x)
 
     return keras.Model(inputs, out, name=MODEL_NAME)
@@ -170,19 +192,23 @@ def main():
     os.makedirs(arch_dir, exist_ok=True)
 
     # ── 1. Load data ──────────────────────────────────────────────────────────
+    # These .npz files were created by process_combined_v2.py
+    # Each file contains X (features) and y (labels: 1=depressed, 0=normal)
+    # X shape: (N_samples, 46_feature_rows, 313_time_columns)
     print("\n[1/5] Loading combined_v2 data...")
-    X_train, y_train = load_split("train")
-    X_val,   y_val   = load_split("val")
-    X_test,  y_test  = load_split("test")
+    X_train, y_train = load_split("train")  # data the model learns from
+    X_val,   y_val   = load_split("val")    # data used to check progress during training (not learned from)
+    X_test,  y_test  = load_split("test")   # data held back until the very end for final score
 
     rav  = np.load(os.path.join(COMBINED_DIR, "ravdess_features.npz"))
-    X_rav, y_rav = rav["X"], rav["y"]
+    X_rav, y_rav = rav["X"], rav["y"]       # RAVDESS: completely different dataset, tests generalization
 
     sid_data  = np.load(os.path.join(COMBINED_DIR, "test_subject_ids.npz"),
                         allow_pickle=True)
-    test_sids = sid_data["subject_ids"]
+    test_sids = sid_data["subject_ids"]     # which EATD speaker each test segment belongs to
 
-    # Add channel dim: (N, 46, 313) → (N, 46, 313, 1)
+    # CNNs expect a channel dimension — same as color images have RGB channels
+    # Our features are grayscale so we just add 1 channel: (N, 46, 313) → (N, 46, 313, 1)
     X_train = X_train[..., np.newaxis]
     X_val   = X_val[...,   np.newaxis]
     X_test  = X_test[...,  np.newaxis]
@@ -203,10 +229,16 @@ def main():
         print(f"  Train after Mixup: {X_train.shape}")
 
     # ── 3. Build model ────────────────────────────────────────────────────────
+    # Class weights tell the model to care more about depressed samples,
+    # because there are far fewer of them in the dataset (~16% depressed vs ~84% normal).
+    # Without this, the model could just predict "normal" for everything and still
+    # get 84% accuracy — which is useless for us.
+    # We use pre-augmentation counts so augmented copies don't get double-counted.
     meta = np.load(os.path.join(COMBINED_DIR, "metadata.npz"), allow_pickle=True)
-    pre_dep  = int(meta["pre_aug_train_dep"])
-    pre_norm = int(meta["pre_aug_train_norm"])
+    pre_dep  = int(meta["pre_aug_train_dep"])   # original depressed sample count (before augmentation)
+    pre_norm = int(meta["pre_aug_train_norm"])  # original normal sample count
     pre_n    = pre_dep + pre_norm
+    # Weight formula: total / (2 × class_count) — rarer class gets higher weight
     class_weights = {0: pre_n / (2 * pre_norm), 1: pre_n / (2 * pre_dep)}
     print(f"\n  Class weights (pre-aug): {class_weights}")
 
@@ -214,8 +246,14 @@ def main():
     print(f"\n[2/5] Building model (input={input_shape})...")
     model = build_model(input_shape, dropout=args.dropout)
     model.compile(
+        # Adam adjusts the learning rate automatically per parameter (smarter than plain SGD)
         optimizer=keras.optimizers.Adam(learning_rate=args.lr),
+        # BinaryCrossentropy is the standard loss for binary classification.
+        # label_smoothing=0.05: instead of hard labels {0, 1}, use {0.025, 0.975}.
+        # This prevents the model from becoming overconfident on training samples.
         loss=keras.losses.BinaryCrossentropy(label_smoothing=args.label_smoothing),
+        # Track accuracy and AUC during training so we can see progress each epoch.
+        # AUC is a better metric than accuracy here because of class imbalance.
         metrics=["accuracy", keras.metrics.AUC(name="auc")],
     )
     model.summary()
@@ -223,14 +261,21 @@ def main():
     # ── 4. Train ─────────────────────────────────────────────────────────────
     best_path = os.path.join(arch_dir, "best.keras")
     callbacks = [
+        # EarlyStopping: watch val_auc (AUC on validation set).
+        # If it doesn't improve for 20 epochs, stop — and reload the best weights seen.
+        # This prevents overfitting: the model stops when it starts memorizing training data.
         keras.callbacks.EarlyStopping(
             monitor="val_auc", patience=20, mode="max",
             restore_best_weights=True, verbose=1,
         ),
+        # ReduceLROnPlateau: if val_auc is stuck for 7 epochs, cut learning rate in half.
+        # Smaller steps help the model escape local plateaus near the end of training.
         keras.callbacks.ReduceLROnPlateau(
             monitor="val_auc", factor=0.5, patience=7,
             min_lr=1e-6, mode="max", verbose=1,
         ),
+        # ModelCheckpoint: every time val_auc reaches a new best, save the model.
+        # This means best.keras always holds the best model, not the last one.
         keras.callbacks.ModelCheckpoint(
             best_path, monitor="val_auc", mode="max",
             save_best_only=True, verbose=1,
@@ -248,11 +293,18 @@ def main():
     model.save(os.path.join(arch_dir, "final.keras"))
 
     # ── 5. Threshold optimisation ────────────────────────────────────────────
+    # The model always outputs a probability (0–1) rather than a hard label.
+    # We decide: above what probability do we call it "depressed"?
+    # Default = 0.5, but that may not be the best cut-off for this specific model.
+    #
+    # Youden's J = TPR - FPR  (maximized when we correctly catch the most
+    # depressed cases while minimizing false alarms on healthy people).
+    # We find the best threshold on the validation set.
     print("\n[4/5] Optimising decision threshold (Youden's J on val)...")
-    val_proba = model.predict(X_val, verbose=0).flatten()
-    fpr, tpr, thresholds = roc_curve(y_val, val_proba)
-    best_idx = int(np.argmax(tpr - fpr))
-    opt_thr  = float(thresholds[best_idx])
+    val_proba = model.predict(X_val, verbose=0).flatten()  # raw probabilities for all val samples
+    fpr, tpr, thresholds = roc_curve(y_val, val_proba)     # sweep all possible thresholds
+    best_idx = int(np.argmax(tpr - fpr))                   # index where Youden's J is maximum
+    opt_thr  = float(thresholds[best_idx])                 # the optimal threshold value
     print(f"  Youden's J threshold: {opt_thr:.4f} "
           f"(TPR={tpr[best_idx]:.4f}, FPR={fpr[best_idx]:.4f})")
 
@@ -320,13 +372,19 @@ def main():
                     print("  Only one class in subject-level labels, AUC undefined.")
 
     # ── TFLite export ─────────────────────────────────────────────────────────
+    # TFLite converts the Keras model to a format runnable on Android/iOS.
+    # Optimize.DEFAULT applies dynamic range quantization:
+    # it converts float32 weights to int8, reducing file size ~4× with minimal accuracy loss.
+    # Note: this model exports the CNN weights only — the feature extraction
+    # (STFT, MFCC etc.) is NOT baked in here.  The combined model with preprocessing
+    # is built separately in src/export/tflite_converter.py.
     print("\n  Exporting to TFLite...")
     converter = tf.lite.TFLiteConverter.from_keras_model(model)
-    converter.optimizations = [tf.lite.Optimize.DEFAULT]
-    tflite_model = converter.convert()
+    converter.optimizations = [tf.lite.Optimize.DEFAULT]  # enable quantization
+    tflite_model = converter.convert()                     # do the conversion
     tflite_path  = os.path.join(arch_dir, f"{MODEL_NAME}.tflite")
     with open(tflite_path, "wb") as f:
-        f.write(tflite_model)
+        f.write(tflite_model)                              # write binary to disk
     size_kb = os.path.getsize(tflite_path) / 1024
     print(f"  Saved: {tflite_path}  ({size_kb:.1f} KB)")
 
